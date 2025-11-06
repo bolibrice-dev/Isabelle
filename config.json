@@ -1,0 +1,21 @@
+{
+    "server": {
+        "http_port": ":8084",
+        "ice_servers": [
+            "stun:stun.cloudflare.com:3478",
+            "turn:turn.cloudflare.com:3478?transport=udp",
+            "turn:turn.cloudflare.com:3478?transport=tcp",
+            "turns:turn.cloudflare.com:5349?transport=tcp"
+        ],
+        "ice_username": "g0b0d4bfc5a042f8478cc784aac418bd3ac5e61990692ecd1f3f5969d0fa1357",
+        "ice_credential": "b4a4de7febc6596bb4046ec194d9894f4df726b79eb2117087e0ba690c6391f8"
+    },
+    "streams": {
+        "0": {
+            "on_demand": true,
+            "disable_audio": false,
+            "webrtc_port_min": 1000,
+            "url": "placeholder"
+        }
+    }
+}

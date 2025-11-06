@@ -1,0 +1,31 @@
+{
+    "uuid": "9e2162de-1fb4-4cd1-87a0-1d17cd7aebf4",
+    "owner1": "ed366ed2-2204-4cec-885f-2d9423477bf6",
+    "lat": "42.972555642525094",
+    "lng": "-71.45415556919663",
+    "guests": {},
+    "shared_cams": {},
+    "cam_list": [
+        "192.168.0.244",
+        "192.168.0.151",
+        "192.168.0.120"
+    ],
+    "cam_config": {
+        "192.168.0.244": {
+            "scrolling_msg": null,
+            "guests": {},
+            "public": false
+        },
+        "192.168.0.151": {
+            "scrolling_msg": null,
+            "guests": {},
+            "public": true
+        },
+        "192.168.0.120": {
+            "scrolling_msg": null,
+            "guests": {},
+            "public": false
+        }
+    },
+    "gt": "f8f1a3e2465c"
+}

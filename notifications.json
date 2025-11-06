@@ -1,0 +1,16 @@
+{
+"notes": {
+        "0": {
+            "sender": "121212-121212-121212",
+            "recipient": "admin",
+            "text": "Something happened with camera 1 ",
+            "send_date": "2025-12-12"
+        },
+        "1": {
+            "sender": "343434-3343-433434",
+            "recipient": "all",
+            "text": "what do y' know",
+            "send_date": "2025-20-12"
+        }
+    }
+}
