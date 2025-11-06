@@ -293,62 +293,63 @@ func myWebRTC_Datachannel(caller string, d *webrtc.DataChannel, cam_now string, 
 				//fmt.Printf("\r\nget client ice: %v", mp4_ice)
 				go get_client_ice_mp4(mp4_ice)
 			case "get_mp4":
-				fname := dcMessage.Param
+				//fname := dcMessage.Param
 				i_idx, err := strconv.Atoi(cam_now) //cam id offset by 1
 				if err == nil {
 					i_idx += 1
 					ip, err := getCameraIPById(fmt.Sprint(i_idx))
 					if err == nil {
 						dir := "./recordings/" + ip + "/"
-						var fullpath = dir + fname
+						var fullpath = dir + "any_2025-11-05 16:44:49.mp4" //fname
 						fmt.Printf("\r\nTrying to retrieve %v", fullpath)
 						os.Setenv("GST_DEBUG", "3")
 						//vdo, err := get_video_track_from_h264(fullpath) //get_audio_and_video_tracks_from_mp4(fullpath)
 						//if err == nil {
 						fmt.Printf("\r\nmp4 file load success")
-						var senders = element.pc.GetSenders()
-						var snd_vdo = senders[0]
-						//var snd_aud = senders[1]
-
-						/*v := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{
-							MimeType: webrtc.MimeTypeH264,
-						}, Moxer.UUID0, "cashan-video")*/
-
-						vdo, _ := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{
-							MimeType: webrtc.MimeTypeH264,
-						}, element.UUID0, "cashan-video")
-						aud, _ := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{
-							MimeType: "audio/opus",
-						}, element.UUID1, "pion")
-
-						stream_from_mp4(fullpath, vdo, aud)
-						//vdo, aud, pline := LoadMP4(fullpath)
-						/*if pline != nil {
-
-						}*/
-
-						a, b := element.pc.AddTrack(vdo)
-						if a == nil {
-							fmt.Printf("\r\n^^^^^^^^^^^^^^^^^^^^^^^^something went wrong %v",
-								b.Error())
+						var (
+							videoSender *webrtc.RTPSender
+							audioSender *webrtc.RTPSender
+						)
+						for _, sender := range element.pc.GetSenders() {
+							if track := sender.Track(); track != nil {
+								switch track.Kind() {
+								case webrtc.RTPCodecTypeVideo:
+									videoSender = sender
+								case webrtc.RTPCodecTypeAudio:
+									audioSender = sender
+								}
+							}
 						}
-						element.pc.AddTrack(aud)
-
-						res := snd_vdo.ReplaceTrack(vdo)
-						if res != nil {
-							fmt.Printf("\r\nerror replacing vdo track: %v", res.Error())
+						if videoSender == nil {
+							fmt.Println("\r\ncould not locate video sender to replace track")
+							break
 						}
-						/*res = snd_aud.ReplaceTrack(aud)
-						if res != nil {
-							fmt.Printf("\r\nerror replacing vdo track: %v", res.Error())
-						}*/
 
-						//pline.Start()
-						//	pline.Play()
+						playback, err := newMP4PlaybackFromSenders(fullpath, videoSender, audioSender)
+						if err != nil {
+							fmt.Printf("\r\ncould not prepare mp4 playback: %v", err)
+							break
+						}
 
-						/*} else {
-							fmt.Printf("\r\nmp4 file retrieval error: %v", err.Error())
-						}*/
+						storeMP4Playback("pc:"+element.UUID0, playback)
+
+						if err := videoSender.ReplaceTrack(playback.VideoTrack()); err != nil {
+							fmt.Printf("\r\nerror replacing video track: %v", err)
+							playback.Stop()
+							break
+						}
+						element.avTrack = playback.VideoTrack()
+
+						if audioSender != nil && playback.AudioTrack() != nil {
+							if err := audioSender.ReplaceTrack(playback.AudioTrack()); err != nil {
+								fmt.Printf("\r\naudio replace error: %v", err)
+							} else {
+								element.auTrack = playback.AudioTrack()
+							}
+						}
+
+						playback.Start()
+						fmt.Println("\r\nreplaced tracks")
 
 					}
 				}

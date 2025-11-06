@@ -116,6 +116,42 @@ func (m *mp4Playback) Stop() {
 	m.wg.Wait()
 }
 
+func newMP4PlaybackFromSenders(path string, videoSender, audioSender *webrtc.RTPSender) (*mp4Playback, error) {
+	if videoSender == nil {
+		return nil, fmt.Errorf("mp4 playback: video sender required")
+	}
+
+	baseVideo, ok := videoSender.Track().(*webrtc.TrackLocalStaticSample)
+	if !ok || baseVideo == nil {
+		return nil, fmt.Errorf("mp4 playback: unsupported video track type %T", videoSender.Track())
+	}
+
+	videoCap := baseVideo.Codec()
+	fmt.Printf("\nmp4 clone codec: %s fmtp=%s\n", videoCap.MimeType, videoCap.SDPFmtpLine)
+	videoClone, err := webrtc.NewTrackLocalStaticSample(videoCap, baseVideo.ID(), baseVideo.StreamID())
+	if err != nil {
+		return nil, fmt.Errorf("mp4 playback video track clone: %w", err)
+	}
+
+	var audioClone *webrtc.TrackLocalStaticSample
+	if audioSender != nil {
+		if baseAudio, ok := audioSender.Track().(*webrtc.TrackLocalStaticSample); ok && baseAudio != nil {
+			audioCap := baseAudio.Codec()
+			audioClone, err = webrtc.NewTrackLocalStaticSample(audioCap, baseAudio.ID(), baseAudio.StreamID())
+			if err != nil {
+				return nil, fmt.Errorf("mp4 playback audio track clone: %w", err)
+			}
+		}
+	}
+
+	videoCodec := videoCap.MimeType
+	if videoCodec == "" {
+		videoCodec = webrtc.MimeTypeH264
+	}
+
+	return newMP4Playback(path, videoCodec, videoClone, audioClone)
+}
+
 func stopMP4Playback(key string) {
 	mp4PlaybackMu.Lock()
 	defer mp4PlaybackMu.Unlock()
