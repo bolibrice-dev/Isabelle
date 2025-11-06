@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -13,9 +14,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/pion/rtwatch/gst"
 	"github.com/pion/webrtc/v2/pkg/media/ivfreader"
 	"github.com/pion/webrtc/v3"
 	"github.com/pion/webrtc/v3/pkg/media"
@@ -23,9 +24,119 @@ import (
 )
 
 var (
-	mp4_peer = make(map[string](*webrtc.PeerConnection))
-	mp4_dc   = make(map[string](*webrtc.DataChannel))
+	mp4_peer      = make(map[string](*webrtc.PeerConnection))
+	mp4_dc        = make(map[string](*webrtc.DataChannel))
+	mp4_playbacks = make(map[string]*mp4Playback)
+	mp4PlaybackMu sync.Mutex
 )
+
+type mp4Playback struct {
+	path       string
+	videoCodec string
+
+	videoTrack *webrtc.TrackLocalStaticSample
+	audioTrack *webrtc.TrackLocalStaticSample
+
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+	once   sync.Once
+}
+
+func newMP4Playback(path string, videoCodec string, videoTrack, audioTrack *webrtc.TrackLocalStaticSample) (*mp4Playback, error) {
+	if _, err := os.Stat(path); err != nil {
+		return nil, fmt.Errorf("mp4 playback open %q: %w", path, err)
+	}
+	if videoCodec == "" {
+		videoCodec = webrtc.MimeTypeH264
+	}
+
+	if videoTrack == nil {
+		var err error
+		videoTrack, err = webrtc.NewTrackLocalStaticSample(
+			webrtc.RTPCodecCapability{MimeType: videoCodec},
+			fmt.Sprintf("mp4-%d", time.Now().UnixNano()),
+			"mp4-video",
+		)
+		if err != nil {
+			return nil, fmt.Errorf("mp4 playback video track: %w", err)
+		}
+	}
+	if audioTrack == nil {
+		var err error
+		audioTrack, err = webrtc.NewTrackLocalStaticSample(
+			webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2},
+			fmt.Sprintf("mp4-%d", time.Now().UnixNano()),
+			"mp4-audio",
+		)
+		if err != nil {
+			return nil, fmt.Errorf("mp4 playback audio track: %w", err)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	return &mp4Playback{
+		path:       path,
+		videoCodec: videoCodec,
+		videoTrack: videoTrack,
+		audioTrack: audioTrack,
+		ctx:        ctx,
+		cancel:     cancel,
+	}, nil
+}
+
+func (m *mp4Playback) VideoTrack() *webrtc.TrackLocalStaticSample {
+	return m.videoTrack
+}
+
+func (m *mp4Playback) AudioTrack() *webrtc.TrackLocalStaticSample {
+	return m.audioTrack
+}
+
+func (m *mp4Playback) Start() {
+	m.once.Do(func() {
+		m.wg.Add(1)
+		go func() {
+			defer m.wg.Done()
+			pumpVideo(m.ctx, m.path, m.videoCodec, m.videoTrack)
+		}()
+
+		if m.audioTrack != nil {
+			m.wg.Add(1)
+			go func() {
+				defer m.wg.Done()
+				pumpAudio(m.ctx, m.path, m.audioTrack)
+			}()
+		}
+	})
+}
+
+func (m *mp4Playback) Stop() {
+	m.cancel()
+	m.wg.Wait()
+}
+
+func stopMP4Playback(key string) {
+	mp4PlaybackMu.Lock()
+	defer mp4PlaybackMu.Unlock()
+	if playback, ok := mp4_playbacks[key]; ok {
+		playback.Stop()
+		delete(mp4_playbacks, key)
+	}
+}
+
+func storeMP4Playback(key string, playback *mp4Playback) {
+	mp4PlaybackMu.Lock()
+	defer mp4PlaybackMu.Unlock()
+	if existing, ok := mp4_playbacks[key]; ok {
+		existing.Stop()
+	}
+	if playback == nil {
+		delete(mp4_playbacks, key)
+		return
+	}
+	mp4_playbacks[key] = playback
+}
 
 // readNextNAL extracts the next NAL unit (Annex-B start-code delimited)
 func readNextNAL(r *bufio.Reader, startCode []byte) ([]byte, error) {
@@ -152,25 +263,26 @@ func getMP4_atIndex(ip string, idx uint32) string {
 }
 
 func LoadMP4(filename string) (*webrtc.TrackLocalStaticSample,
-	*webrtc.TrackLocalStaticSample, *gst.Pipeline) {
-	var err error
-	videoTrack, err = webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{
+	*webrtc.TrackLocalStaticSample, *mp4Playback, error) {
+	videoTrack, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{
 		MimeType: webrtc.MimeTypeH264,
 	}, "Moxer.UUID0", "cashan-video")
 	if err != nil {
-		log.Fatal(err)
+		return nil, nil, nil, err
 	}
-	audioTrack, err = webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{MimeType: "audio/opus"}, "synced", "audio")
+	audioTrack, err := webrtc.NewTrackLocalStaticSample(
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2},
+		"synced", "audio",
+	)
 	if err != nil {
-		log.Fatal(err)
+		return nil, nil, nil, err
 	}
-	var pline = &gst.Pipeline{}
-	pline = gst.CreatePipeline(filename, audioTrack, videoTrack)
-	pline.Start()
-	pline.Play()
 
-	return videoTrack, audioTrack, pline
-
+	playback, err := newMP4Playback(filename, webrtc.MimeTypeH264, videoTrack, audioTrack)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return videoTrack, audioTrack, playback, nil
 }
 
 // Detect if the offer includes H264 or VP8 codecs for video.
@@ -188,102 +300,13 @@ func pickVideoCodec(sdp string) string {
 }
 
 func stream_from_mp4(mp4Path string, videoTrack, audioTrack *webrtc.TrackLocalStaticSample) {
-	// Start ffmpeg for video (H264)
-	videoCmd := exec.Command("ffmpeg",
-		"-i", mp4Path,
-		"-an", // disable audio
-		"-c:v", "libx264",
-		"-preset", "veryfast",
-		"-tune", "zerolatency",
-		"-f", "h264",
-		"-pix_fmt", "yuv420p",
-		"pipe:1",
-	)
-	//videoCmd.Stderr = os.Stderr
-	//videoCmd.Stdout = os.Stdout
-
-	videoOut, err := videoCmd.StdoutPipe()
+	playback, err := newMP4Playback(mp4Path, webrtc.MimeTypeH264, videoTrack, audioTrack)
 	if err != nil {
-		//return fmt.Errorf("video stdout: %w", err)
+		log.Printf("stream_from_mp4: %v", err)
+		return
 	}
-	if err := videoCmd.Start(); err != nil {
-		//return fmt.Errorf("video start: %w", err)
-	}
-
-	// Start ffmpeg for audio (AAC to Opus)
-	audioCmd := exec.Command("ffmpeg",
-		"-i", mp4Path,
-		"-vn",             // no video
-		"-c:a", "libopus", // transcode audio to opus
-		"-b:a", "32k",
-		"-f", "opus", // output raw opus
-		"pipe:1",
-	)
-	audioCmd.Stderr = os.Stderr
-	audioOut, err := audioCmd.StdoutPipe()
-	if err != nil {
-		print(fmt.Errorf("audio stdout: %w", err))
-	}
-	if err := audioCmd.Start(); err != nil {
-		print(fmt.Errorf("audio start: %w", err))
-	}
-
-	// Start video goroutine
-	go func() {
-		defer videoCmd.Wait()
-		buf := make([]byte, 1400)
-		for {
-			/*if err := videoCmd.Wait(); err != nil {
-				log.Printf("ffmpeg video process exited with error: %v", err)
-				break
-			}*/
-
-			n, err := videoOut.Read(buf)
-			if err == io.EOF {
-				print("\r\n------------------------------video EOF?????")
-				break
-			} else if err != nil {
-				log.Println("-----------------------video read error:", err)
-				break
-			}
-			sample := media.Sample{
-				Data:     append([]byte{}, buf[:n]...),
-				Duration: time.Second / 30, // 30fps
-			}
-			if writeErr := videoTrack.WriteSample(sample); writeErr != nil {
-				log.Println("video write error:", writeErr)
-				break
-			}
-		}
-		log.Println("video stream ended")
-	}()
-
-	// Start audio goroutine
-	go func() {
-		defer audioCmd.Wait()
-		buf := make([]byte, 100)
-		for {
-			n, err := audioOut.Read(buf)
-			if err == io.EOF {
-				print("\r\n------------------------------Normal audio EOF found")
-				break
-			} else if err != nil {
-				log.Println("audio read error:", err)
-				break
-			}
-			sample := media.Sample{
-				Data:     append([]byte{}, buf[:n]...),
-				Duration: 20 * time.Millisecond, // typical Opus frame
-			}
-			if writeErr := audioTrack.WriteSample(sample); writeErr != nil {
-				log.Println("audio write error:", writeErr)
-				break
-			}
-		}
-		log.Println("audio stream ended")
-	}()
-
-	//return nil
+	storeMP4Playback("file:"+mp4Path, playback)
+	playback.Start()
 }
 
 func drainRTCP(s *webrtc.RTPSender) {
@@ -309,31 +332,40 @@ func setup_pc(videoCodec string, pc *webrtc.PeerConnection, indice string) webrt
 		webrtc.RTPCodecCapability{MimeType: videoMime},
 		"video", "cashanv",
 	)
-
 	if err != nil {
 		_ = pc.Close()
 		return webrtc.SessionDescription{}
 	}
-
-	vSender, err := pc.AddTrack(videoTrack)
-	if err != nil {
-		_ = pc.Close()
-		return webrtc.SessionDescription{}
-	}
-
-	go drainRTCP(vSender)
 
 	audioTrack, err := webrtc.NewTrackLocalStaticSample(
 		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2},
 		"audio", "cashana",
 	)
-
 	if err != nil {
 		_ = pc.Close()
 		return webrtc.SessionDescription{}
 	}
+
+	playback, err := newMP4Playback(mp4Path, videoCodec, videoTrack, audioTrack)
+	if err != nil {
+		log.Printf("mp4 playback init: %v", err)
+		_ = pc.Close()
+		return webrtc.SessionDescription{}
+	}
+	key := "pc:" + indice
+	storeMP4Playback(key, playback)
+
+	vSender, err := pc.AddTrack(videoTrack)
+	if err != nil {
+		stopMP4Playback(key)
+		_ = pc.Close()
+		return webrtc.SessionDescription{}
+	}
+	go drainRTCP(vSender)
+
 	aSender, err := pc.AddTrack(audioTrack)
 	if err != nil {
+		stopMP4Playback(key)
 		_ = pc.Close()
 		return webrtc.SessionDescription{}
 	}
@@ -342,10 +374,12 @@ func setup_pc(videoCodec string, pc *webrtc.PeerConnection, indice string) webrt
 	// Create and set local answer
 	answer, err := pc.CreateAnswer(nil)
 	if err != nil {
+		stopMP4Playback(key)
 		_ = pc.Close()
 		return webrtc.SessionDescription{}
 	}
 	if err := pc.SetLocalDescription(answer); err != nil {
+		stopMP4Playback(key)
 		_ = pc.Close()
 		return webrtc.SessionDescription{}
 	}
@@ -364,12 +398,13 @@ func setup_pc(videoCodec string, pc *webrtc.PeerConnection, indice string) webrt
 		log.Printf("PC state: %s", s)
 		switch s {
 		case webrtc.PeerConnectionStateConnected:
-			// Start ffmpeg pipelines once connected
-			go pumpVideo(mp4Path, videoCodec, videoTrack)
-			go pumpAudio(mp4Path, audioTrack)
-		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed,
-			webrtc.PeerConnectionStateDisconnected:
+			playback.Start()
+		case webrtc.PeerConnectionStateFailed,
+			webrtc.PeerConnectionStateClosed:
+			stopMP4Playback(key)
 			_ = pc.Close()
+		case webrtc.PeerConnectionStateDisconnected:
+			log.Printf("mp4 peer %s disconnected; waiting for ICE to recover", indice)
 		}
 	})
 	return answer
@@ -549,7 +584,7 @@ func get_video_track_from_h264(h264 string) (track *webrtc.TrackLocalStaticSampl
 
 // ----------------- Media pumpers (ffmpeg → readers → WriteSample) -----------------
 
-func pumpVideo(path string, codec string, track *webrtc.TrackLocalStaticSample) {
+func pumpVideo(ctx context.Context, path string, codec string, track *webrtc.TrackLocalStaticSample) {
 	abs, _ := filepath.Abs(path)
 	var cmd *exec.Cmd
 	switch codec {
@@ -602,6 +637,17 @@ func pumpVideo(path string, codec string, track *webrtc.TrackLocalStaticSample) 
 		return
 	}
 
+	defer func() {
+		if waitErr := cmd.Wait(); waitErr != nil && !errors.Is(waitErr, os.ErrProcessDone) {
+			log.Printf("video wait: %v", waitErr)
+		}
+	}()
+
+	go func() {
+		<-ctx.Done()
+		_ = cmd.Process.Kill()
+	}()
+
 	if codec == "video/VP8" {
 		reader, header, err := ivfreader.NewWith(stdout)
 		if err != nil {
@@ -611,6 +657,11 @@ func pumpVideo(path string, codec string, track *webrtc.TrackLocalStaticSample) 
 		}
 		frameDur := time.Duration(float64(time.Second) * float64(header.TimebaseNumerator) / float64(header.TimebaseDenominator))
 		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
 			frame, _, err := reader.ParseNextFrame()
 			if errors.Is(err, io.EOF) {
 				return
@@ -620,6 +671,10 @@ func pumpVideo(path string, codec string, track *webrtc.TrackLocalStaticSample) 
 				return
 			}
 			if werr := track.WriteSample(media.Sample{Data: frame, Duration: frameDur}); werr != nil {
+				if errors.Is(werr, io.ErrClosedPipe) || errors.Is(werr, webrtc.ErrConnectionClosed) {
+					time.Sleep(50 * time.Millisecond)
+					continue
+				}
 				log.Printf("video write: %v", werr)
 				return
 			}
@@ -633,6 +688,11 @@ func pumpVideo(path string, codec string, track *webrtc.TrackLocalStaticSample) 
 		ticker := time.NewTicker(33 * time.Millisecond)
 		defer ticker.Stop()
 		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
 			n, err := stdout.Read(buf)
 			if n > 0 {
 				chunk = append(chunk, buf[:n]...)
@@ -648,6 +708,10 @@ func pumpVideo(path string, codec string, track *webrtc.TrackLocalStaticSample) 
 			case <-ticker.C:
 				if len(chunk) > 0 {
 					if werr := track.WriteSample(media.Sample{Data: chunk, Duration: 33 * time.Millisecond}); werr != nil {
+						if errors.Is(werr, io.ErrClosedPipe) || errors.Is(werr, webrtc.ErrConnectionClosed) {
+							time.Sleep(50 * time.Millisecond)
+							continue
+						}
 						log.Printf("h264 write: %v", werr)
 						return
 					}
@@ -701,7 +765,10 @@ func pumpVideo(path string, codec string, track *webrtc.TrackLocalStaticSample) 
 	}
 }*/
 
-func pumpAudio(path string, track *webrtc.TrackLocalStaticSample) {
+func pumpAudio(ctx context.Context, path string, track *webrtc.TrackLocalStaticSample) {
+	if track == nil {
+		return
+	}
 	abs, _ := filepath.Abs(path)
 	cmd := exec.Command("ffmpeg",
 		"-re", "-i", abs,
@@ -726,6 +793,17 @@ func pumpAudio(path string, track *webrtc.TrackLocalStaticSample) {
 		return
 	}
 
+	defer func() {
+		if waitErr := cmd.Wait(); waitErr != nil && !errors.Is(waitErr, os.ErrProcessDone) {
+			log.Printf("audio wait: %v", waitErr)
+		}
+	}()
+
+	go func() {
+		<-ctx.Done()
+		_ = cmd.Process.Kill()
+	}()
+
 	ogg, _, err := oggreader.NewWith(stdout)
 	if err != nil {
 		log.Printf("ogg open: %v", err)
@@ -734,6 +812,11 @@ func pumpAudio(path string, track *webrtc.TrackLocalStaticSample) {
 	}
 	frameDur := 20 * time.Millisecond
 	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
 		p, _, err := ogg.ParseNextPage()
 		if errors.Is(err, io.EOF) {
 			return
@@ -743,6 +826,10 @@ func pumpAudio(path string, track *webrtc.TrackLocalStaticSample) {
 			return
 		}
 		if werr := track.WriteSample(media.Sample{Data: p, Duration: frameDur}); werr != nil {
+			if errors.Is(werr, io.ErrClosedPipe) || errors.Is(werr, webrtc.ErrConnectionClosed) {
+				time.Sleep(50 * time.Millisecond)
+				continue
+			}
 			log.Printf("audio write: %v", werr)
 			return
 		}
