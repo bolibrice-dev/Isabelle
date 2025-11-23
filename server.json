@@ -6,26 +6,15 @@
     "guests": {},
     "shared_cams": {},
     "cam_list": [
-        "192.168.0.244",
-        "192.168.0.151",
-        "192.168.0.120"
+        "192.168.0.244"
     ],
     "cam_config": {
         "192.168.0.244": {
             "scrolling_msg": null,
             "guests": {},
             "public": false
-        },
-        "192.168.0.151": {
-            "scrolling_msg": null,
-            "guests": {},
-            "public": true
-        },
-        "192.168.0.120": {
-            "scrolling_msg": null,
-            "guests": {},
-            "public": false
         }
+        
     },
     "gt": "f8f1a3e2465c"
 }

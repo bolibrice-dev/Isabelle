@@ -26,22 +26,24 @@ type Resp struct {
 
 func exec_AI_process() {
 	cmd := exec.Command("python3", "detect.py")
-	cmd.Stderr = io.Discard //os.Stderr  //- for debugging only
+	cmd.Stderr = io.Discard //os.Stderr- for debugging only
 	cmd.Stdout = io.Discard // os.Stdout
 	cmd.Start()
 }
 
 func reportPersonDetected(ip string) {
+	cam_activity_time_mutex.Lock()
 	var tdiff = time.Since(last_time_person_detected)
 	minutes := tdiff.Minutes()
-	cam_activity_time_mutex.Lock()
+
 	last_cam_activity_time[ip] = time.Now()
 	//fmt.Printf("\r\n---------Person detected on ip: %v", ip)
-	cam_activity_time_mutex.Unlock()
-	if minutes >= 45 {
+
+	if minutes >= 30 {
 		notifyPersonDetected(ip)
 		last_time_person_detected = time.Now()
 	}
+	cam_activity_time_mutex.Unlock()
 }
 
 func detect_for_python(url string, ip string) {
@@ -72,7 +74,10 @@ func detect_for_python(url string, ip string) {
 					time.Now().Format("15:04:05"), ip)
 				go reportPersonDetected(ip)
 				//go recordAllCams(5)
-			}
+			} /*else if d.Class == "car" && d.Confidence >= 0.6 {
+				fmt.Printf("\r\n%v detected @ x=%v: %v; IP: %v",
+					d.Class, d.Box[0], d.Confidence, ip)
+			}*/
 		}
 	}
 }

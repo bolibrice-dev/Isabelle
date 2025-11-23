@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>MP4 Browser</title>
+  <style>
+    :root {
+      color-scheme: dark;
+    }
+    body {
+      font-family: sans-serif;
+      margin: 2rem;
+      background: #111;
+      color: #f5f5f5;
+    }
+    h1 {
+      margin-bottom: 0.5rem;
+    }
+    .hint {
+      margin-top: 0;
+      color: #bbb;
+      max-width: 720px;
+    }
+    .layout {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1.5rem;
+      margin-top: 1.5rem;
+    }
+    .file-panel,
+    .player-panel {
+      background: #1c1c1c;
+      padding: 1rem;
+      border: 1px solid #2b2b2b;
+      border-radius: 8px;
+      box-shadow: 0 8px 20px rgb(0 0 0 / 0.35);
+    }
+    .file-panel {
+      flex: 1 1 280px;
+      max-height: 820px;
+      display: flex;
+      flex-direction: column;
+    }
+    .player-panel {
+      flex: 2 1 420px;
+    }
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.75rem;
+      font-weight: bold;
+      color: #ddd;
+    }
+    button {
+      padding: 0.35rem 0.75rem;
+      background: #3a86ff;
+      border: none;
+      border-radius: 4px;
+      color: #fff;
+      font-size: 0.9rem;
+      cursor: pointer;
+    }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    .file-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      overflow-y: auto;
+      flex: 1;
+      border: 1px solid #2f2f2f;
+      border-radius: 6px;
+    }
+    .file-item {
+      padding: 0.5rem 0.75rem;
+      border-bottom: 1px solid #2b2b2b;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+    .file-item:last-child {
+      border-bottom: none;
+    }
+    .file-item:hover {
+      background: #222;
+    }
+    .file-item.active {
+      background: #3a86ff;
+      color: #fff;
+    }
+    .file-item.empty {
+      text-align: center;
+      color: #888;
+      cursor: default;
+    }
+    .current-file {
+      margin-bottom: 0.5rem;
+      font-weight: bold;
+    }
+    .video-frame {
+      width: 390px;
+      height: 763px;
+      overflow: hidden;
+      background: #000;
+      border: 1px solid #333;
+      border-radius: 6px;
+      margin-bottom: 0.5rem;
+      position: relative;
+    }
+    .video-frame video {
+      height: 100%;
+      width: auto;
+      display: block;
+      transform: translateX(0);
+      transition: transform 80ms linear;
+      background: #000;
+    }
+    .pan-overlay {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
+      bottom: 70px;
+      cursor: grab;
+      touch-action: none;
+    }
+    .pan-overlay.dragging {
+      cursor: grabbing;
+    }
+    .status {
+      min-height: 1.2rem;
+      color: #7dd87d;
+      margin-top: 0.5rem;
+    }
+    .status.error {
+      color: #ff6b6b;
+    }
+  </style>
+</head>
+<body>
+  <h1>Local MP4 Preview</h1>
+  <p class="hint">Select a recording below to stream it from the server. Files are discovered from <code>recordings/</code> on the host.</p>
+
+  <div class="layout">
+    <section class="file-panel">
+      <div class="panel-header">
+        <span>Available Recordings</span>
+        <button id="refreshBtn" type="button">Refresh</button>
+      </div>
+      <ul id="fileList" class="file-list"></ul>
+    </section>
+
+    <section class="player-panel">
+      <div class="current-file">Current file: <span id="currentFile">(none)</span></div>
+      <div class="video-frame" id="videoFrame">
+        <video id="mp4Player" controls playsinline></video>
+        <div class="pan-overlay" id="panOverlay" aria-hidden="true"></div>
+      </div>
+      <p class="status" id="status"></p>
+    </section>
+  </div>
+
+  <script>
+    const frame = document.getElementById('videoFrame');
+    const overlay = document.getElementById('panOverlay');
+    const videoEl = document.getElementById('mp4Player');
+    const fileListEl = document.getElementById('fileList');
+    const refreshBtn = document.getElementById('refreshBtn');
+    const currentFileEl = document.getElementById('currentFile');
+    const statusEl = document.getElementById('status');
+
+    const recordings = {
+      files: [],
+      current: ''
+    };
+
+    let maxOffset = 0;
+    let currentOffset = 0;
+    let startX = 0;
+    let startOffset = 0;
+    let dragging = false;
+    let moved = false;
+    let currentSelection = '';
+    const CLICK_THRESHOLD = 5;
+
+    const setStatus = (message, isError = false) => {
+      statusEl.textContent = message || '';
+      statusEl.classList.toggle('error', Boolean(isError));
+    };
+
+    const videoUrlFor = relPath => `/mp4/file?path=${encodeURIComponent(relPath)}`;
+
+    const renderFileList = () => {
+      fileListEl.innerHTML = '';
+      if (!recordings.files.length) {
+        const li = document.createElement('li');
+        li.className = 'file-item empty';
+        li.textContent = 'No recordings found';
+        fileListEl.appendChild(li);
+        return;
+      }
+      recordings.files.forEach(path => {
+        const li = document.createElement('li');
+        li.className = 'file-item';
+        li.textContent = path;
+        if (path === currentSelection) {
+          li.classList.add('active');
+        }
+        li.addEventListener('click', () => selectFile(path));
+        fileListEl.appendChild(li);
+      });
+    };
+
+    const updateVideoSource = relPath => {
+      currentSelection = relPath || '';
+      currentFileEl.textContent = currentSelection || '(none)';
+      if (!currentSelection) {
+        videoEl.removeAttribute('src');
+        videoEl.load();
+        return;
+      }
+      const src = videoUrlFor(currentSelection);
+      if (videoEl.dataset.src === src) {
+        return;
+      }
+      videoEl.dataset.src = src;
+      videoEl.src = src;
+      videoEl.load();
+      videoEl.play().catch(() => {});
+    };
+
+    const loadFiles = async (autoSelect = false) => {
+      try {
+        const response = await fetch('/mp4/list');
+        const data = await response.json();
+        if (!response.ok || data.error) {
+          throw new Error(data.error || 'Unable to fetch recordings');
+        }
+        recordings.files = Array.isArray(data.files) ? data.files : [];
+        recordings.current = data.current || '';
+
+        if (recordings.current) {
+          updateVideoSource(recordings.current);
+          setStatus(`Now playing ${recordings.current}`);
+        } else if (autoSelect && recordings.files.length) {
+          await selectFile(recordings.files[0]);
+          return;
+        } else {
+          updateVideoSource('');
+          setStatus('No file selected', true);
+        }
+        renderFileList();
+      } catch (err) {
+        console.error(err);
+        setStatus(err.message || 'Failed to load recordings', true);
+        recordings.files = [];
+        renderFileList();
+      }
+    };
+
+    const selectFile = async path => {
+      if (!path) {
+        return;
+      }
+      try {
+        setStatus(`Switching to ${path}...`);
+        const response = await fetch('/mp4/select', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path })
+        });
+        const data = await response.json();
+        if (!response.ok || data.error) {
+          throw new Error(data.error || 'Unable to switch recording');
+        }
+        recordings.current = data.current || path;
+        updateVideoSource(recordings.current);
+        renderFileList();
+        setStatus(`Now playing ${recordings.current}`);
+      } catch (err) {
+        console.error(err);
+        setStatus(err.message || 'Failed to switch recording', true);
+      }
+    };
+
+    const updatePan = () => {
+      if (maxOffset <= 0) {
+        videoEl.style.transform = 'translateX(0)';
+        return;
+      }
+      videoEl.style.transform = `translateX(${-currentOffset}px)`;
+    };
+
+    videoEl.addEventListener('loadedmetadata', () => {
+      const container = videoEl.parentElement;
+      const containerWidth = container.clientWidth;
+      const containerHeight = container.clientHeight;
+      const videoWidth = (videoEl.videoWidth / videoEl.videoHeight) * containerHeight;
+      maxOffset = Math.max(0, Math.round(videoWidth - containerWidth));
+      currentOffset = Math.floor(maxOffset / 2);
+      updatePan();
+    });
+
+    const clamp = (val, min, max) => Math.min(Math.max(val, min), max);
+
+    const pointerDown = event => {
+      if (maxOffset <= 0) {
+        videoEl.paused ? videoEl.play() : videoEl.pause();
+        return;
+      }
+      dragging = true;
+      moved = false;
+      overlay.classList.add('dragging');
+      overlay.setPointerCapture(event.pointerId);
+      startX = event.clientX;
+      startOffset = currentOffset;
+    };
+
+    const pointerMove = event => {
+      if (!dragging) return;
+      const delta = event.clientX - startX;
+      if (!moved && Math.abs(delta) > CLICK_THRESHOLD) {
+        moved = true;
+      }
+      currentOffset = clamp(startOffset - delta, 0, maxOffset);
+      updatePan();
+    };
+
+    const pointerUp = event => {
+      if (!dragging) return;
+      dragging = false;
+      overlay.classList.remove('dragging');
+      if (overlay.hasPointerCapture && overlay.hasPointerCapture(event.pointerId)) {
+        overlay.releasePointerCapture(event.pointerId);
+      }
+      if (!moved) {
+        videoEl.paused ? videoEl.play() : videoEl.pause();
+      }
+    };
+
+    overlay.addEventListener('pointerdown', pointerDown);
+    overlay.addEventListener('pointermove', pointerMove);
+    overlay.addEventListener('pointerup', pointerUp);
+    overlay.addEventListener('pointerleave', pointerUp);
+    overlay.addEventListener('pointercancel', pointerUp);
+    refreshBtn.addEventListener('click', () => loadFiles(false));
+
+    loadFiles(true);
+  </script>
+</body>
+</html>

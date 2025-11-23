@@ -8,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -214,7 +213,6 @@ func myWebRTC_Datachannel(caller string, d *webrtc.DataChannel, cam_now string, 
 
 	isClosed := false
 	num_dc := 0
-	UNUSED_MOXER(element)
 	last_active_value := false
 	d.OnOpen(func() {
 		num_dc += 1
@@ -273,6 +271,7 @@ func myWebRTC_Datachannel(caller string, d *webrtc.DataChannel, cam_now string, 
 			entry := fmt.Sprintf("User '%v' left camera %v", phone, cam_now)
 			add_c3_history(entry)
 		}
+		StopInlineMP4Playback(element)
 
 		add_pc_user(cam_now, 999) // 999 subtract 1
 		//fmt.Printf("\r\ndata conn with '%v' closed; cam %v now has %v user(s)",
@@ -292,66 +291,112 @@ func myWebRTC_Datachannel(caller string, d *webrtc.DataChannel, cam_now string, 
 				mp4_ice := dcMessage.Param
 				//fmt.Printf("\r\nget client ice: %v", mp4_ice)
 				go get_client_ice_mp4(mp4_ice)
-			case "get_mp4":
-				//fname := dcMessage.Param
+			case "load_mp4":
+				//fmt.Printf("\r\nload mp4--%v", cam_now)
 				i_idx, err := strconv.Atoi(cam_now) //cam id offset by 1
+				if err != nil {
+					fmt.Printf("\r\nnot sure whats wrong with cam_now...")
+					return
+				}
+				newid := i_idx + 1
+				absPath, err := StartInlineMP4Playback(fmt.Sprint(newid), dcMessage.Param, element)
+				if err != nil {
+					fmt.Printf("inline mp4 load error: %v", err)
+					sendInlineJSON(d, map[string]string{
+						"msg":   "mp4_inline_error",
+						"error": err.Error(),
+					})
+					break
+				}
+				sendInlineJSON(d, map[string]string{
+					"msg":  "mp4_ready",
+					"path": relativeRecordingPath(absPath),
+				})
+
+			case "swap_mp4":
+				if absPath, err := StartInlineMP4Playback(cam_now, dcMessage.Param, element); err == nil {
+					sendInlineJSON(d, map[string]string{
+						"msg":  "mp4_inline_ready",
+						"path": relativeRecordingPath(absPath),
+					})
+					break
+				} else if err != nil {
+					log.Printf("inline mp4 swap error: %v", err)
+				}
+				str := strings.Split(dcMessage.Param, "////")
+				fmt.Printf("\r\nrequest to swap mp4 to %v", dcMessage.Param)
+
+				i_idx, err := strconv.Atoi(str[0]) //cam id offset by 1
+				if err != nil {
+					fmt.Printf("\r\nnot sure whats wrong...")
+					return
+				}
+				newid := i_idx + 1
+				ip, _ := getCameraIPById(fmt.Sprint(newid))
+				pth := fmt.Sprintf("%v/%v", ip, str[1])
+				//relpath := mp4SelectRequest{Path: string(pth)}
+				absPath, err := resolveRecordingPath(pth)
+				if err != nil {
+					fmt.Printf("\r\nnot sure still...")
+					return
+				}
+				fmt.Printf("\r\nswitching to %v", absPath)
+				err = SwapPeerConnectionPlayback(fmt.Sprint(newid), absPath)
+				if err != nil {
+					fmt.Printf("\r\nswap error: %v", err)
+				}
+
+			case "stop_mp4":
+				StopInlineMP4Playback(element)
+				sendInlineJSON(d, map[string]string{
+					"msg": "mp4_stopped",
+				})
+
+			case "get_mp4":
+				str := strings.Split(dcMessage.Param, "////")
+				i_idx, err := strconv.Atoi(str[1]) //cam id offset by 1
 				if err == nil {
-					i_idx += 1
-					ip, err := getCameraIPById(fmt.Sprint(i_idx))
-					if err == nil {
-						dir := "./recordings/" + ip + "/"
-						var fullpath = dir + "any_2025-11-05 16:44:49.mp4" //fname
-						fmt.Printf("\r\nTrying to retrieve %v", fullpath)
-						os.Setenv("GST_DEBUG", "3")
-						//vdo, err := get_video_track_from_h264(fullpath) //get_audio_and_video_tracks_from_mp4(fullpath)
-						//if err == nil {
-						fmt.Printf("\r\nmp4 file load success")
-						var (
-							videoSender *webrtc.RTPSender
-							audioSender *webrtc.RTPSender
-						)
-						for _, sender := range element.pc.GetSenders() {
-							if track := sender.Track(); track != nil {
-								switch track.Kind() {
-								case webrtc.RTPCodecTypeVideo:
-									videoSender = sender
-								case webrtc.RTPCodecTypeAudio:
-									audioSender = sender
-								}
-							}
-						}
-						if videoSender == nil {
-							fmt.Println("\r\ncould not locate video sender to replace track")
-							break
-						}
+					fmt.Printf("\r\ngetting mp4 for cam %v", i_idx)
+				}
+				rmsdp := str[2] //remote sdp
 
-						playback, err := newMP4PlaybackFromSenders(fullpath, videoSender, audioSender)
-						if err != nil {
-							fmt.Printf("\r\ncould not prepare mp4 playback: %v", err)
-							break
-						}
+				remote_sdp, _ := base64.StdEncoding.DecodeString(rmsdp)
 
-						storeMP4Playback("pc:"+element.UUID0, playback)
+				offer := mp4OfferRequest{SDP: string(remote_sdp)}
 
-						if err := videoSender.ReplaceTrack(playback.VideoTrack()); err != nil {
-							fmt.Printf("\r\nerror replacing video track: %v", err)
-							playback.Stop()
-							break
-						}
-						element.avTrack = playback.VideoTrack()
+				newid := i_idx + 1
+				ip, _ := getCameraIPById(fmt.Sprint(newid))
+				mp4_path := fmt.Sprintf("%v/%v", ip, str[3])
+				abs, err := resolveRecordingPath(mp4_path)
+				if err == nil {
+					SwitchMP4PlaybackFile(abs)
+				} else {
+					fmt.Printf("\r\nserious error: %v", err)
+					return
+				}
+				resp := processOffer(offer)
+				if resp.Error != "" {
+					fmt.Printf("\r\nerror----cheap")
+				}
+				fmt.Printf("\r\nstoring %v", newid)
+				key := fmt.Sprintf("pc:%v", newid)
+				storeMP4Playback(key, resp.Pback)
 
-						if audioSender != nil && playback.AudioTrack() != nil {
-							if err := audioSender.ReplaceTrack(playback.AudioTrack()); err != nil {
-								fmt.Printf("\r\naudio replace error: %v", err)
-							} else {
-								element.auTrack = playback.AudioTrack()
-							}
-						}
+				pyl, err := json.Marshal(resp)
+				if err != nil {
+					log.Printf("mp4 answer marshal: %v", err)
+					return
+				}
+				payload := string(pyl)
 
-						playback.Start()
-						fmt.Println("\r\nreplaced tracks")
+				sdp := strings.Replace(payload, "\r\n", "////", -1)
+				ajax := fmt.Sprintf("{\"msg\":\"mp4_sdp\",\"param\":%v}", sdp)
 
-					}
+				////fmt.Printf("\r\n\r\npayload: %v", sdp)
+
+				if d.ReadyState() == webrtc.DataChannelStateOpen {
+					d.SendText(ajax)
+					//fmt.Printf("\r\n%v", ajax)
 				}
 
 			case "begin_view":
@@ -371,6 +416,7 @@ func myWebRTC_Datachannel(caller string, d *webrtc.DataChannel, cam_now string, 
 					//fmt.Printf("\r\nend view; cam %v now has %v user(s)",
 					//	cam_now, pc_users[cam_now])
 				}
+				StopInlineMP4Playback(element)
 
 			case "evt_subscribe":
 				evt := dcMessage.Param
@@ -430,8 +476,8 @@ func myWebRTC_Datachannel(caller string, d *webrtc.DataChannel, cam_now string, 
 				}
 				//fmt.Printf("\r\n--------%v", ajax)
 
-			case "get_new_mp4_stream":
-				go get_new_mp4_stream(d, dcMessage.Param)
+			/*case "get_new_mp4_stream":
+			go get_new_mp4_stream(d, dcMessage.Param)*/
 
 			case "get_num_users":
 				ajax := fmt.Sprintf(`{"msg":"num_users","count":%v}`, pc_users[cam_now])
@@ -445,9 +491,11 @@ func myWebRTC_Datachannel(caller string, d *webrtc.DataChannel, cam_now string, 
 					iCam += 1
 
 					ds := getAvailableDiskSpace()
-					vcnt := getVideoCount(iCam)
-					ajax := fmt.Sprintf(`{"msg":"num_vdo","cnt":"%v","ds":"%v"}`,
-						vcnt, ds)
+					vcnt, vdos := getVideoCount(iCam)
+					vdyo := strings.Join(vdos[:], ",")
+					//fmt.Printf("\r\nvdos: %v", vdyo)
+					ajax := fmt.Sprintf(`{"msg":"num_vdo","cnt":"%v","ds":"%v","vdos":"%v"}`,
+						vcnt, ds, vdyo)
 					if d.ReadyState() == webrtc.DataChannelStateOpen {
 						d.SendText(ajax)
 					}
@@ -645,4 +693,16 @@ func send_num_user_update(d *webrtc.DataChannel, idx string) {
 		d.SendText(ajax)
 	}
 	pc_users_sync.Unlock()
+}
+
+func sendInlineJSON(d *webrtc.DataChannel, payload interface{}) {
+	if d == nil || d.ReadyState() != webrtc.DataChannelStateOpen {
+		return
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		log.Printf("inline mp4 marshal error: %v", err)
+		return
+	}
+	d.SendText(string(data))
 }

@@ -150,6 +150,8 @@ func changeCamSettings(id string, key string, val string) {
 		key = "allow_report"
 	case "4":
 		key = "ltln"
+	case "5":
+		key = "allow_map"
 	case "x":
 		key = "label"
 	}
@@ -212,7 +214,8 @@ func getCameraIPById(id string) (string, error) {
 
 func getCameras() *sql.Rows {
 	//sql := fmt.Sprintf() ---- id,ip,label,sdate,avail,allow_pr,show_count,allow_report
-	rows, err := db.Query(`SELECT id, ip, [label], [sdate], avail, allow_pr,show_count,allow_report,ltln FROM cameras`)
+	rows, err := db.Query(`SELECT id, ip, [label], [sdate], avail, allow_map, allow_pr,
+	show_count,allow_report,ltln FROM cameras`)
 	if err == nil {
 		return rows
 	}
@@ -338,7 +341,7 @@ func initDatabase(szdb string) *sql.DB {
 		if err == nil {
 			sql = `CREATE TABLE IF NOT EXISTS cameras (id INTEGER PRIMARY KEY, 
 		           ip TEXT,label TEXT, sdate TEXT,avail INTEGER DEFAULT (0), 
-				   allow_pr INTEGER  DEFAULT (0),show_count INTEGER  DEFAULT (0),
+				   allow_map DEFAULT (0), allow_pr INTEGER  DEFAULT (0),show_count INTEGER  DEFAULT (0),
 				   allow_report INTEGER  DEFAULT (0),ltln TEXT)`
 			_, err = db.Exec(sql)
 		}

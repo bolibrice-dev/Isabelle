@@ -7,18 +7,28 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func enableWebServer() {
-	http.HandleFunc("/", handleHome)
-	http.HandleFunc("/viewmp4", handleMP4)
-	http.HandleFunc("/numMp4", handleGetNumMP4s)
-	http.HandleFunc("/cmd_del", handleDelCmd)
-	http.HandleFunc("/numcams", handleGetNumCams)
-	http.HandleFunc("/getcams", handleGetMP4s)
-	log.Println("Server started on :8089")
-	print("\r\n-------------------------launching web server")
-	log.Fatal(http.ListenAndServe(":8089", nil))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", handleHome)
+	mux.HandleFunc("/viewmp4", handleMP4)
+	mux.HandleFunc("/numMp4", handleGetNumMP4s)
+	mux.HandleFunc("/cmd_del", handleDelCmd)
+	mux.HandleFunc("/numcams", handleGetNumCams)
+	mux.HandleFunc("/getcams", handleGetMP4s)
+
+	for {
+		print("\r\n-------------------------launching web server")
+		if err := http.ListenAndServe(":8089", mux); err != nil {
+			log.Printf("web server exited: %v (retrying in 5s)", err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		log.Println("web server stopped gracefully")
+		return
+	}
 }
 
 func handleDelCmd(w http.ResponseWriter, r *http.Request) {
@@ -74,7 +84,7 @@ func handleGetNumMP4s(w http.ResponseWriter, r *http.Request) {
 		cam := q["cam"][0]
 		cid, err := strconv.Atoi(cam)
 		if err == nil {
-			cnt = getVideoCount(cid)
+			cnt, _ = getVideoCount(cid)
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Write([]byte(fmt.Sprintf("%v", cnt)))
 		}

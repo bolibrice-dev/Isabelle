@@ -1,1 +1,6 @@
 recordings/
+yolov5s.pt
+camview.db
+camview
+backup.txt
+adapter.js.1

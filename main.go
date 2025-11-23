@@ -49,6 +49,7 @@ type CamCam struct {
 	Label        string `json:"label"`
 	Sdate        string `json:"sdate"`
 	Avail        int    `json:"avail"`
+	Allow_Map    int    `json:"allow_map"`
 	Allow_pr     int    `json:"allow_pr"`
 	Show_count   int    `json:"show_count"`
 	ALlow_report int    `json:"allow_report"`
@@ -398,11 +399,6 @@ func PlaceCamsInStruct() {
 				print("\r\nerr: ", err.Error())
 			}
 
-			//num_vdo := getVideoCount(acam.Ip)
-			//cai := getMP4_atIndex(acam.Ip, 10)
-			//fmt.Printf("\r\ncam %v mp4 at 10: %v (%v)", acam.Ip, cai, num_vdo)
-
-			//the_url = url
 			strm := StreamST{
 				OnDemand:     true,
 				DisableAudio: false,
@@ -462,6 +458,7 @@ func main() {
 	devices, err := discovery.StartDiscovery(2 * time.Second)
 
 	if err == nil && len(devices) > 0 {
+		fmt.Printf("\r\nWe discovered %v devices", len(devices))
 		for _, device := range devices {
 			//fmt.Printf("\r\ndevice: %v", device)
 			parts := strings.Split(device.XAddr, "/")
@@ -486,8 +483,6 @@ func main() {
 	Config = loadConfig()
 	PlaceCamsInStruct()
 
-	//exec_AI_process()
-
 	sigs := make(chan os.Signal, 1)
 	done := make(chan bool, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
@@ -495,7 +490,9 @@ func main() {
 	fmt.Printf("\r\navailable disk space: %v", ds)
 
 	go recordAllCams(1)
-	go enableWebServer()
+	//go enableWebServer()
+	/*StartMP4TestServer(":8085", "/home/beau/Documents/Isabelle/recordings/"+
+	"192.168.0.120/any_2025-11-06 16:18:37.mp4")*/
 
 	go func() {
 		sig := <-sigs
@@ -529,9 +526,9 @@ func remote_getCamList(from string) {
 		rowsToStruct(cams, &cmcm)
 		for _, c := range cmcm {
 			record := fmt.Sprintf(`{"id":"%d","ip":"%s","label":"%s",
-					"date":"%s","s0":%d,"s1":%d,"s2":%d,"s3":%d,"s4":"%s"},`,
+					"date":"%s","s0":%d,"s1":%d,"s2":%d,"s3":%d,"s4":"%s","s5":%d},`,
 				c.Id, c.Ip, c.Label, c.Sdate, c.Avail, c.Allow_pr,
-				c.Show_count, c.ALlow_report, c.LatLon)
+				c.Show_count, c.ALlow_report, c.LatLon, c.Allow_Map)
 			ajax += record
 		}
 		ajax += "]"

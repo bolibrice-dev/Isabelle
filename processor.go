@@ -344,6 +344,10 @@ func (element *Moxer) WritePacket(pkt av.Packet) (err error) {
 		//log.Println("error: client is offline??")
 		return ErrorClientOffline
 	}
+	if inlinePlaybackActive(element) {
+		WritePacketSuccess = true
+		return nil
+	}
 	if element.status == webrtc.ICEConnectionStateChecking {
 		WritePacketSuccess = true
 		//log.Println("success: connection is checking??")

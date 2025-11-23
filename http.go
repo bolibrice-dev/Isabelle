@@ -90,30 +90,6 @@ func setCamPublic(b bool) {
 	cam_is_public = b
 }
 
-/*func serveHTTP() {
-	gin.SetMode(gin.ReleaseMode)
-	//if pcMap == nil {
-	pcMap = make(map[string]*webrtc.PeerConnection)
-	// pcMap["apple"] = *nil
-	print("\r\n")
-	log.Println("serving HTTP on port", Config.Server.HTTPPort)
-	//}
-	gin.DefaultWriter = ioutil.Discard
-	router := gin.Default()
-	router.Use(CORSMiddleware())
-
-	router.POST("/from_python/", HTTPLocalRequest)
-
-	router.POST("/candidate", HTTPAPIPostIceCandis)
-	router.POST("/cloudfare/connect/:uuid", HTTPAPILaunchConnectCamToCloudfare)
-
-	//router.StaticFS("/static", http.Dir("web/static"))
-	err := router.Run(Config.Server.HTTPPort)
-	if err != nil {
-		log.Fatalln("Start HTTP Server error", err)
-	}
-}*/
-
 func gen_uuid() (suid string) {
 	uid, _ := uuid.NewV7()
 	suid = uid.String()
@@ -123,17 +99,7 @@ func gen_uuid() (suid string) {
 
 func HTTPAPIGetCloudFareIceServers(c *gin.Context) {
 	myurl := `-X POST -H "Authorization: Bearer 4e9e11376d07d0bc9cf3e4740d9e4127350dad8f8e4d3d5ddd3ac7f00aea336e" -H "Content-Type: application/json" -d '{"ttl": 86400}' https://rtc.live.cloudflare.com/v1/turn/keys/996b93e5c9835944e06dca67323fb0d8/credentials/generate`
-	//cmd := exec.Command("curl", "-O", myurl)
-	//cmd.Run()
-	/*req, err := http.NewRequest(http.MethodGet, myurl, nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-	cmd, err := curling.NewFromRequest(req)
-	if err != nil {
-		log.Fatal(err)
-	}
-	log.Println(cmd)*/
+
 	out, err := exec.Command("curl " + myurl).Output() //+ myurl).Output()
 	if err != nil {
 		log.Fatal(err)
